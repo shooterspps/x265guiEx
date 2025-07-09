@@ -1,0 +1,120 @@
+name: Build Windows Releases
+
+on:
+  push:
+    branches:
+      - zh_CN
+      - actions
+    tags:
+      - '*'
+
+jobs:
+  get_version_name:
+    name: Get version name
+    runs-on: ubuntu-latest
+    outputs:
+      rev_count: ${{ steps.rev.outputs.REVCOUNT }}
+      version_name: ${{ steps.rev.outputs.VERSION_NAME }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Set version name
+      id: rev
+      run: |
+        cd ${{ github.workspace }}
+        REVCOUNT=`git rev-list --count HEAD`
+        echo "rev_count=${REVCOUNT}" >> $GITHUB_OUTPUT
+        if [[ "${{ github.ref }}" =~ "refs/tags/" ]]; then
+          VERSION=$(echo ${{ github.ref }} | sed -e "s#refs/tags/##g")
+        else
+          VERSION=r${REVCOUNT}
+        fi
+        echo "version_name=${VERSION}" >> $GITHUB_OUTPUT
+
+  build:
+    name: Upload Release Asset
+    runs-on: windows-2022
+    needs: get_version_name
+
+    defaults:
+      run:
+        shell: cmd
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86
+            platform: Win32
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: ${{ matrix.arch }}
+
+      - name: MSBuild
+        run: |
+          msbuild x265guiEx.sln /t:build /p:configuration=Release /p:Platform=${{ matrix.platform }} -maxcpucount
+
+      - name: Download auo_setup
+        id: download_auosetup
+        run: |
+          curl -s -o auo_setup.zip -L https://github.com/rigaya/auo_setup/releases/download/2.01/auo_setup_2.01v2.zip
+
+      - name: Create Archieve
+        id: archieve
+        run: |
+          mkdir x265guiEx_release
+          7z x -ox265guiEx_release\ auo_setup.zip
+          copy /y .\Release\x265guiEx.auo x265guiEx_release\plugins\
+          copy /y .\x265guiEx\x265guiEx.ini x265guiEx_release\plugins\
+          copy /y .\x265guiEx\x265guiEx.en.ini x265guiEx_release\plugins\
+          copy /y .\x265guiEx\x265guiEx.zh.ini x265guiEx_release\plugins\
+          echo D | xcopy /y /e .\x265guiEx\stg x265guiEx_release\plugins\x265guiEx_stg
+          copy /y .\x265guiEx\auo_setup.ini x265guiEx_release\exe_files\
+          copy /y .\x265guiEx\x265guiEx_readme.txt x265guiEx_release\
+          dir /b /s x265guiEx_release\
+          7z a -mx9 x265guiEx.zip .\x265guiEx_release\*
+
+      - name: Calc hash
+        id: calc_hash
+        run: |
+          7z h -scrc* x265guiEx.zip
+
+      - name: delete release
+        uses: dev-drprasad/delete-tag-and-release@v1.1
+        with:
+          tag_name: new
+          delete_release: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: release
+        uses: actions/create-release@v1
+        id: create_release
+        with:
+          draft: false
+          prerelease: false
+          release_name: latest version
+          tag_name: new
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload Release Asset
+        id: upload-release-asset 
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./x265guiEx.zip
+          asset_name: x265guiEx.zip
+          asset_content_type: application/zip
